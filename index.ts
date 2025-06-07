@@ -2,7 +2,6 @@ import { Stagehand, Page, BrowserContext } from "@browserbasehq/stagehand";
 import StagehandConfig from "./stagehand.config.js";
 import chalk from "chalk";
 import boxen from "boxen";
-import { drawObserveOverlay, clearOverlays, actWithCache } from "./utils.js";
 import { z } from "zod";
 
 /**
@@ -25,54 +24,55 @@ async function main({
   context,
   stagehand,
 }: {
-  page: Page; // Playwright Page with act, extract, and observe methods
-  context: BrowserContext; // Playwright BrowserContext
-  stagehand: Stagehand; // Stagehand instance
+  page: Page;
+  context: BrowserContext;
+  stagehand: Stagehand;
 }) {
-  // Navigate to a URL
-  await page.goto("https://docs.stagehand.dev/reference/introduction");
+  // Navigate to Google Flights
+  await page.goto("https://www.google.com/travel/flights?hl=en");
 
-  // Use act() to take actions on the page
-  await page.act("Click the search box");
-
-  // Use observe() to plan an action before doing it
-  const [action] = await page.observe(
-    "Type 'Tell me in one sentence why I should use Stagehand' into the search box",
+  // Search for the required flights
+  await page.act(
+    "Search for flights from Toronto to Bangalore departing between September 27 and October 2 with no more than 2 layovers",
   );
-  await drawObserveOverlay(page, [action]); // Highlight the search box
-  await page.waitForTimeout(1_000);
-  await clearOverlays(page); // Remove the highlight before typing
-  await page.act(action); // Take the action
 
-  // For more on caching, check out our docs: https://docs.stagehand.dev/examples/caching
-  await page.waitForTimeout(1_000);
-  await actWithCache(page, "Click the suggestion to use AI");
-  await page.waitForTimeout(5_000);
+  // Apply filters for layover time and total duration, then sort by lowest price
+  await page.act(
+    "Filter results so each layover is under 5 hours and total travel time is under 30 hours, then sort results by price",
+  );
 
-  // Use extract() to extract structured data from the page
-  const { text } = await page.extract({
+  const { flights } = await page.extract({
     instruction:
-      "extract the text of the AI suggestion from the search results",
+      "Extract each flight option shown including airline names, price, total travel time, number of layovers, layover durations, and departure date",
     schema: z.object({
-      text: z.string(),
+      flights: z.array(
+        z.object({
+          airlines: z.string(),
+          price: z.string(),
+          totalDuration: z.string(),
+          stops: z.number(),
+          layovers: z.array(z.string()).optional(),
+          departureDate: z.string(),
+        }),
+      ),
     }),
   });
+
+  const parsed = flights
+    .map((f) => ({
+      ...f,
+      numericPrice: parseFloat(f.price.replace(/[^0-9.]/g, "")),
+    }))
+    .sort((a, b) => a.numericPrice - b.numericPrice);
+
+  console.log(boxen(JSON.stringify(parsed, null, 2), { title: "Flights", padding: 1 }));
+
   stagehand.log({
-    category: "create-browser-app",
-    message: `Got AI Suggestion`,
+    category: "flight-search",
+    message: `Retrieved ${parsed.length} flights`,
     auxiliary: {
-      text: {
-        value: text,
-        type: "string",
-      },
-    },
-  });
-  stagehand.log({
-    category: "create-browser-app",
-    message: `Metrics`,
-    auxiliary: {
-      metrics: {
-        value: JSON.stringify(stagehand.metrics),
+      flights: {
+        value: JSON.stringify(parsed),
         type: "object",
       },
     },
