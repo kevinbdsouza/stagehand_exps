@@ -31,19 +31,25 @@ async function main({
   // Navigate to Google Flights
   await page.goto("https://www.google.com/travel/flights?hl=en");
 
-  // Search for the required flights
-  await page.act(
-    "Search for flights from Toronto to Bangalore departing between September 27 and October 2 with no more than 2 layovers",
+  const agent = stagehand.agent({
+    provider: "openai",
+    model: "computer-use-preview",
+  });
+
+  await agent.execute(
+    [
+      "Ensure you are on https://www.google.com/travel/flights?hl=en.",
+      "Search flights from Toronto to Bangalore departing between September 27 and October 2.",
+      "Filter results to at most 2 layovers with each layover under 5 hours and total travel time under 30 hours.",
+      "Sort the list by lowest price."].join(" ")
   );
 
-  // Apply filters for layover time and total duration, then sort by lowest price
-  await page.act(
-    "Filter results so each layover is under 5 hours and total travel time is under 30 hours, then sort results by price",
-  );
+  await page.waitForLoadState("networkidle");
+  await page.waitForSelector('div[role="listitem"]', { timeout: 30000 });
 
   const { flights } = await page.extract({
     instruction:
-      "Extract each flight option shown including airline names, price, total travel time, number of layovers, layover durations, and departure date",
+      "Extract up to 10 flight options shown including airline names, price, total travel time, number of layovers, layover durations, and departure date",
     schema: z.object({
       flights: z.array(
         z.object({
