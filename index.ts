@@ -4,6 +4,40 @@ import chalk from "chalk";
 import boxen from "boxen";
 import { z } from "zod";
 
+type RawFlight = {
+  airlines: string;
+  price: string;
+  totalDuration: string;
+  stops: number;
+  layovers?: string[];
+};
+
+function parseDuration(duration: string): number {
+  const hMatch = duration.match(/(\d+)\s*h/);
+  const mMatch = duration.match(/(\d+)\s*m/);
+  const hours = hMatch ? parseInt(hMatch[1], 10) : 0;
+  const minutes = mMatch ? parseInt(mMatch[1], 10) : 0;
+  return hours * 60 + minutes;
+}
+
+function parseFlight(flight: RawFlight) {
+  return {
+    ...flight,
+    numericPrice: parseFloat(flight.price.replace(/[^0-9.]/g, "")),
+    totalMinutes: parseDuration(flight.totalDuration),
+    layoverMinutes: (flight.layovers || []).map((l) => parseDuration(l)),
+  };
+}
+
+function isValidFlight(flight: ReturnType<typeof parseFlight>) {
+  const maxLayover = 5 * 60;
+  return (
+    flight.stops <= 2 &&
+    flight.totalMinutes <= 30 * 60 &&
+    flight.layoverMinutes.every((l) => l <= maxLayover)
+  );
+}
+
 /**
  * 🤘 Welcome to Stagehand! Thanks so much for trying us out!
  * 🛠️ CONFIGURATION: stagehand.config.ts will help you configure Stagehand
@@ -28,57 +62,60 @@ async function main({
   context: BrowserContext;
   stagehand: Stagehand;
 }) {
-  // Navigate to Google Flights
-  await page.goto("https://www.google.com/travel/flights?hl=en");
+  const startDate = new Date("2024-09-27");
+  const endDate = new Date("2024-10-02");
 
-  const agent = stagehand.agent({
-    provider: "openai",
-    model: "computer-use-preview",
-  });
+  const allFlights: (ReturnType<typeof parseFlight> & { departureDate: string })[] = [];
 
-  await agent.execute(
-    [
-      "Ensure you are on https://www.google.com/travel/flights?hl=en.",
-      "Search flights from Toronto to Bangalore departing between September 27 and October 2.",
-      "Filter results to at most 2 layovers with each layover under 5 hours and total travel time under 30 hours.",
-      "Sort the list by lowest price."].join(" ")
+  for (
+    let d = new Date(startDate);
+    d <= endDate;
+    d.setDate(d.getDate() + 1)
+  ) {
+    const iso = d.toISOString().split("T")[0];
+    const url =
+      `https://www.google.com/travel/flights?hl=en&q=Flights%20from%20Toronto%20to%20Bangalore%20on%20${iso}`;
+
+    await page.goto(url);
+    await page.waitForLoadState("networkidle");
+    await page.waitForSelector('div[role="listitem"]', { timeout: 30000 });
+
+    const { flights } = await page.extract({
+      instruction:
+        "Extract up to 10 flight options shown including airline names, price, total travel time, number of layovers, layover durations",
+      schema: z.object({
+        flights: z.array(
+          z.object({
+            airlines: z.string(),
+            price: z.string(),
+            totalDuration: z.string(),
+            stops: z.number(),
+            layovers: z.array(z.string()).optional(),
+          }),
+        ),
+      }),
+    });
+
+    flights.forEach((f) => {
+      const parsed = parseFlight(f);
+      if (isValidFlight(parsed)) {
+        allFlights.push({ ...parsed, departureDate: iso });
+      }
+    });
+  }
+
+  allFlights.sort((a, b) => a.numericPrice - b.numericPrice);
+
+  console.log(
+    boxen(JSON.stringify(allFlights, null, 2), { title: "Flights", padding: 1 })
   );
-
-  await page.waitForLoadState("networkidle");
-  await page.waitForSelector('div[role="listitem"]', { timeout: 30000 });
-
-  const { flights } = await page.extract({
-    instruction:
-      "Extract up to 10 flight options shown including airline names, price, total travel time, number of layovers, layover durations, and departure date",
-    schema: z.object({
-      flights: z.array(
-        z.object({
-          airlines: z.string(),
-          price: z.string(),
-          totalDuration: z.string(),
-          stops: z.number(),
-          layovers: z.array(z.string()).optional(),
-          departureDate: z.string(),
-        }),
-      ),
-    }),
-  });
-
-  const parsed = flights
-    .map((f) => ({
-      ...f,
-      numericPrice: parseFloat(f.price.replace(/[^0-9.]/g, "")),
-    }))
-    .sort((a, b) => a.numericPrice - b.numericPrice);
-
-  console.log(boxen(JSON.stringify(parsed, null, 2), { title: "Flights", padding: 1 }));
 
   stagehand.log({
     category: "flight-search",
-    message: `Retrieved ${parsed.length} flights`,
+    message: `Retrieved ${allFlights.length} flights`,
     auxiliary: {
       flights: {
-        value: JSON.stringify(parsed),
+        value: JSON.stringify(allFlights),
         type: "object",
       },
     },
